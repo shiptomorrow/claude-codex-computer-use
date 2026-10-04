@@ -7,6 +7,8 @@
 //   to every tools/call. One wrapper process = one session; a turn lasts until the server has
 //   been idle for IDLE_TURN_MS, like a Codex turn ending at its Stop hook.
 // - Sends `turn_ended` when a turn goes idle and on shutdown so claimed Chrome tabs are released.
+// - Also ends the turn right after a kernel reset (a timed-out `js` call or `js_reset`). A reset
+//   during a tab attach can leave that tab failing with "Debugger unattached" until its turn ends.
 // - Records live sessions in a state file; if a previous wrapper died without ending its turn,
 //   the next start ends it before launching the server.
 // - Filters tools/list to the plugin's `enabled_tools`, minus tools marked hidden.
@@ -259,7 +261,8 @@ const SESSION_ID = randomUUID();
 let turnId = randomUUID();
 let turnUsed = false;
 let idleTimer = null;
-const pendingCalls = new Set();
+const pendingCalls = new Map(); // tools/call id -> tool name
+let endTurnWhenIdle = false;
 
 const enabledTools = Array.isArray(cfg.enabled_tools) ? new Set(cfg.enabled_tools) : null;
 const toolsListIds = new Set();
@@ -285,7 +288,7 @@ function forwardToServer(line) {
     if (m?.method === "tools/call") {
       m.params = { ...m.params, _meta: { ...m.params?._meta, [META_KEY]: turnMeta(SESSION_ID, turnId) } };
       turnUsed = true;
-      pendingCalls.add(m.id);
+      pendingCalls.set(m.id, m.params?.name);
       clearTimeout(idleTimer);
     } else if (m?.method === "initialize" && NATIVE_PROMPTS) {
       // cua_repl only requests approvals from clients that advertise form elicitation.
@@ -308,10 +311,20 @@ function forwardToClient(line, msg) {
     cancelledPrompts.add(msg.params.requestId);
     closeDialog(msg.params.requestId);
   }
-  if (msg && !("method" in msg) && pendingCalls.delete(msg.id) && pendingCalls.size === 0) {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(endIdleTurn, IDLE_TURN_MS);
-    idleTimer.unref();
+  if (msg && !("method" in msg) && pendingCalls.has(msg.id)) {
+    const tool = pendingCalls.get(msg.id);
+    pendingCalls.delete(msg.id);
+    if (tool === "js_reset" || (tool === "js" && isKernelReset(msg))) endTurnWhenIdle = true;
+    if (pendingCalls.size === 0) {
+      clearTimeout(idleTimer);
+      if (endTurnWhenIdle) {
+        endTurnWhenIdle = false;
+        endIdleTurn();
+      } else {
+        idleTimer = setTimeout(endIdleTurn, IDLE_TURN_MS);
+        idleTimer.unref();
+      }
+    }
   }
   if (msg && !("method" in msg) && toolsListIds.delete(msg.id) && Array.isArray(msg.result?.tools)) {
     msg.result.tools = msg.result.tools.filter((t) => {
@@ -321,6 +334,12 @@ function forwardToClient(line, msg) {
     line = JSON.stringify(msg);
   }
   process.stdout.write(line + "\n");
+}
+
+// cua_repl reports a timed-out `js` call as "js execution timed out; kernel reset, ...".
+function isKernelReset(msg) {
+  const texts = [msg.error?.message, ...(msg.result?.content ?? []).map((c) => c?.text)];
+  return texts.some((t) => typeof t === "string" && /kernel reset/i.test(t));
 }
 
 function recordTurn() {

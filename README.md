@@ -17,6 +17,7 @@ It:
 - **Follows Codex updates.** On every start it reads the newest `~/.codex/plugins/cache/openai-bundled/unified-computer-use/<version>/.mcp.json` and launches `cua_repl` exactly as that file describes. Nothing about the ChatGPT install is copied into your Claude Code config.
 - **Adds the Codex turn metadata** (`session_id`, `turn_id`) to every tool call. One Claude Code session is one Codex session. A turn ends once the server has been idle for 3 minutes, like a Codex turn ending at its Stop hook.
 - **Releases Chrome tabs.** It sends `turn_ended` when a turn goes idle and on shutdown. If a wrapper is killed before it can do that, the next start ends the orphaned turn so the tab stops being held.
+- **Recovers tabs after a kernel reset.** When a `js` call times out ("kernel reset") or `js_reset` is called, the turn ends as soon as no other call is running. A reset in the middle of attaching to a tab can leave that tab failing with `Debugger unattached` until its turn ends; ending it at once releases the tab, and the next call starts a new turn.
 - **Shows permission prompts as native macOS dialogs** (Allow / Always Allow / Deny). `cua_repl` asks before using each app or site, and headless Claude Code hosts would otherwise decline those requests without showing them.
 - **Exposes the same tools as Codex** (`js`, `js_reset`), using the plugin's own `enabled_tools` list.
 
@@ -87,6 +88,7 @@ CODEX_CU_IDLE_TURN_MS=60000 ./install.sh
 | `claude mcp get codex-cu` is not connected | Run it and read the error. Usually the ChatGPT app moved or Computer Use isn't set up yet; re-run `./install.sh` for a requirements check. |
 | `Missing required Codex turn metadata` | Claude Code is launching `cua_repl` directly instead of the wrapper. Re-run `./install.sh`. |
 | `Tab … is already part of browser session …` | Another live Claude Code session (or Codex) holds that tab. It's released when that session idles for 3 minutes or exits. |
+| `Debugger unattached` on a tab after a timed-out call | The browser service stopped mid-attach. The wrapper ends the turn after the reset, which releases the tab; get it again (`tabs.get` or `user.claimTab`). Keep slow multi-page steps in separate `js` calls so none reaches the 30-second limit. |
 | Chrome calls fail but apps work | Install the Codex Chrome extension and make sure Chrome is running. |
 | A permission was denied by mistake | Denials last for the session. Restart Claude Code (or run `/mcp` and reconnect `codex-cu`). |
 
