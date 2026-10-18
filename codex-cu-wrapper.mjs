@@ -15,6 +15,8 @@
 // - Shows confirmation elicitations (browser permission prompts) as a native macOS dialog, because
 //   headless Claude Code hosts decline them unseen and the decline is then saved for the session.
 //   Set CODEX_CU_NATIVE_PROMPTS=0 to forward them to the MCP client instead.
+// - Remembers session-scoped approvals (every Computer Use app prompt) for the life of the wrapper,
+//   so Allow covers the rest of the Claude Code session as it covers a Codex thread.
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -234,22 +236,44 @@ function closeDialog(requestId) {
 // A dismissed or failed prompt is answered with `cancel`, which the browser service does not persist.
 const cancelledPrompts = new Set();
 
+// Prompts approved for this session. Computer Use asks before every action on a desktop app and
+// leaves remembering a `persist: "session"` approval to the client, as Codex does for its thread.
+// Keyed without tool_name so one approval covers every action on that app.
+const sessionApprovals = new Set();
+
+function approvalKey(params, meta) {
+  return JSON.stringify([meta.connector_id ?? null, params.message ?? null, meta.tool_params ?? null]);
+}
+
+function replyToElicitation(id, result) {
+  child?.stdin.writable && child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+}
+
 async function answerElicitation(msg) {
   const params = msg.params ?? {};
   const meta = params._meta ?? params.meta ?? {};
   const persist = [meta.persist].flat();
+  const sessionScoped = persist.includes("session");
+  const key = approvalKey(params, meta);
+  if (sessionScoped && sessionApprovals.has(key)) {
+    replyToElicitation(msg.id, { action: "accept", content: {}, _meta: { persist: "session" } });
+    return;
+  }
   const title = meta.connector_name ? `${meta.connector_name} permission` : "Codex Computer Use";
   const lines = [params.message || "Allow this action?"];
   if (meta.tool_title) lines.push("", meta.tool_title);
+  if (sessionScoped) lines.push("", "Allow applies until this Claude Code session ends.");
   const { choice, error } = await showDialog(msg.id, lines.join("\n"), title, persist.includes("always"));
   if (cancelledPrompts.delete(msg.id)) return;
   if (error) log(`permission dialog failed: ${error}`);
   let result = { action: "cancel" };
   if (choice === "Deny") result = { action: "decline" };
-  else if (choice === "Allow") result = { action: "accept", content: {} };
+  else if (choice === "Allow")
+    result = { action: "accept", content: {}, ...(sessionScoped ? { _meta: { persist: "session" } } : {}) };
   else if (choice === "Always Allow") result = { action: "accept", content: {}, _meta: { persist: "always" } };
+  if (sessionScoped && result.action === "accept") sessionApprovals.add(key);
   log(`permission prompt "${params.message}": ${choice ?? "failed"} -> ${result.action}`);
-  child?.stdin.writable && child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\n");
+  replyToElicitation(msg.id, result);
 }
 
 // ---------- main ----------

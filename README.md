@@ -61,8 +61,8 @@ The first time Claude touches an app or website, a dialog asks for permission:
 
 | Button | Effect |
 | --- | --- |
-| **Allow** | this time only |
-| **Always Allow** | saved by Codex Computer Use |
+| **Allow** | for the rest of the Claude Code session (desktop apps, and browser prompts that offer session scope); otherwise this time only |
+| **Always Allow** | saved by Codex Computer Use where it supports saving; at least the rest of the session |
 | **Deny** | declined for the rest of the Claude Code session |
 
 The dialog stays open until you answer and comes back to the front every 10 seconds.
